@@ -1,13 +1,50 @@
+# ── Build artifacts ───────────────────────────────────────────────────────────
 node_modules
 .next
+coverage
+out
+storybook-static
+
+# ── Environment / secrets — NEVER bake into an image ─────────────────────────
+# All .env* files are excluded by default.
+# The only exception is .env.example which contains no real secrets and serves
+# as documentation.  NEXT_PUBLIC_* build-time vars must be passed via
+# --build-arg, not via .env files in the image.
 .env
 .env.*
 !.env.example
-npm-debug.log*
-Dockerfile
-docker-compose.yml
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+__tests__
+e2e
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+vitest.config.*
+playwright.config.*
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+*.md
+!public/**/*.md
+
+# ── Version control ───────────────────────────────────────────────────────────
 .git
 .gitignore
-README.md
-coverage
-*.md
+.github
+
+# ── Editor / OS artifacts ─────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Docker files ──────────────────────────────────────────────────────────────
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# ── Storybook / development tooling ──────────────────────────────────────────
+.storybook

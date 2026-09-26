@@ -13,8 +13,8 @@
     "yarn": ">=1.22.0"
   },
   "scripts": {
-    "dev": "concurrently --names \"backend,frontend\" --prefix-colors \"blue,green\" \"yarn workspace rentars-backend dev\" \"yarn workspace web dev\"",
-    "build": "yarn workspace rentars-backend build && yarn workspace web build",
+    "dev": "node api.js && concurrently --names \"backend,frontend\" --prefix-colors \"blue,green\" \"yarn workspace rentars-backend dev\" \"yarn workspace web dev\"",
+    "build": "node api.js && yarn workspace rentars-backend build && yarn workspace web build",
     "test": "yarn workspace rentars-backend test && yarn workspace web test",
     "lint": "biome check .",
     "lint:fix": "biome check . --write",

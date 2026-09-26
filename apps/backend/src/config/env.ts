@@ -183,6 +183,150 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+
+  // ── Data retention ────────────────────────────────────────────────────────
+  // How often the full retention sweep runs, in hours. Default: 24 (once/day).
+  RETENTION_INTERVAL_HOURS: z
+    .string()
+    .default('24')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) throw new Error('RETENTION_INTERVAL_HOURS must be a positive number');
+      return n;
+    }),
+
+  // Maximum rows deleted per table per retention run. Default: 500.
+  // Lower this on high-traffic databases to reduce lock contention.
+  RETENTION_BATCH_SIZE: z
+    .string()
+    .default('500')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_BATCH_SIZE must be a positive integer');
+      return n;
+    }),
+
+  // Set to "true" to run a live (non-dry-run) retention sweep 60 s after
+  // startup.  Useful for one-off cleanups after a policy change is deployed.
+  // The dry-run preview always fires at startup regardless of this flag.
+  RETENTION_RUN_ON_STARTUP: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // ── Retention windows ─────────────────────────────────────────────────────
+  // Each window controls how long a data class is kept before deletion.
+  // All values are in DAYS unless the variable name says HOURS.
+
+  // Expired wallet challenge tokens (hours — they have a 10-min DB TTL).
+  RETENTION_WALLET_CHALLENGES_HOURS: z
+    .string()
+    .default('1')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) throw new Error('RETENTION_WALLET_CHALLENGES_HOURS must be positive');
+      return n;
+    }),
+
+  // Password reset tokens past their expiry timestamp.
+  RETENTION_PASSWORD_RESET_TOKENS_DAYS: z
+    .string()
+    .default('7')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_PASSWORD_RESET_TOKENS_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Blockchain operation logs.
+  RETENTION_BLOCKCHAIN_LOGS_DAYS: z
+    .string()
+    .default('90')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_BLOCKCHAIN_LOGS_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Blockchain→DB sync log rows.
+  RETENTION_SYNC_LOG_DAYS: z
+    .string()
+    .default('30')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_SYNC_LOG_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Read notifications (shorter window — already actioned).
+  RETENTION_NOTIFICATIONS_READ_DAYS: z
+    .string()
+    .default('90')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_NOTIFICATIONS_READ_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Unread notifications (longer window — user may not have seen them yet).
+  RETENTION_NOTIFICATIONS_UNREAD_DAYS: z
+    .string()
+    .default('180')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_NOTIFICATIONS_UNREAD_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Search analytics query records.
+  RETENTION_SEARCH_ANALYTICS_DAYS: z
+    .string()
+    .default('365')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_SEARCH_ANALYTICS_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Deduplicated property view tracking rows.
+  RETENTION_PROPERTY_VIEWS_DAYS: z
+    .string()
+    .default('90')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_PROPERTY_VIEWS_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Failed / timed-out payment intent records (no active dispute).
+  RETENTION_PAYMENTS_FAILED_DAYS: z
+    .string()
+    .default('90')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_PAYMENTS_FAILED_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Soft-deleted properties (deleted_at IS NOT NULL, no active dispute).
+  RETENTION_SOFT_DELETED_PROPERTIES_DAYS: z
+    .string()
+    .default('180')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_SOFT_DELETED_PROPERTIES_DAYS must be a positive integer');
+      return n;
+    }),
+
+  // Completed or cancelled account deletion request records.
+  RETENTION_ACCOUNT_DELETIONS_CLOSED_DAYS: z
+    .string()
+    .default('30')
+    .transform((v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1) throw new Error('RETENTION_ACCOUNT_DELETIONS_CLOSED_DAYS must be a positive integer');
+      return n;
+    }),
 });
 
 // ── Type export ───────────────────────────────────────────────────────────────
