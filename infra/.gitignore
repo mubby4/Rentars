@@ -1,0 +1,24 @@
+# ── Terraform state and local files ──────────────────────────────────────────
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfstate.d/
+tfplan-*
+plan-output.txt
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ── Environment files (populated — contain secret references) ─────────────────
+# The .example files ARE committed.  The populated files are NOT.
+environments/staging/.env.staging
+environments/production/.env.production
+
+# ── TLS certificates ──────────────────────────────────────────────────────────
+nginx/certs/
+*.pem
+*.key
+*.crt

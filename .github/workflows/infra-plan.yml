@@ -1,0 +1,175 @@
+name: Infrastructure Plan
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs `terraform plan` on every PR that touches infra/** or Dockerfiles.
+# Posts a diff summary as a PR comment.
+# Fails the job if any destructive (destroy/replace) action targets a stateful
+# resource (Supabase, Redis, storage).
+#
+# Applies are gated behind the `infra-apply` workflow (separate, manual trigger)
+# which requires approval from the `infra-approvers` team.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - "apps/backend/Dockerfile"
+      - "apps/web/Dockerfile"
+      - ".github/workflows/infra-plan.yml"
+
+permissions:
+  contents: read
+  pull-requests: write   # needed to post the plan comment
+
+jobs:
+
+  # ── Image security scan ─────────────────────────────────────────────────────
+  image-scan:
+    name: Image Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: |
+          docker build \
+            -t rentars-backend:ci-scan \
+            apps/backend/
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            -t rentars-web:ci-scan \
+            --build-arg NEXT_PUBLIC_API_URL=https://example.com \
+            --build-arg NEXT_PUBLIC_STELLAR_NETWORK=testnet \
+            --build-arg NEXT_PUBLIC_HORIZON_URL=https://horizon-testnet.stellar.org \
+            --build-arg NEXT_PUBLIC_SOROBAN_RPC_URL=https://soroban-testnet.stellar.org \
+            --build-arg NEXT_PUBLIC_PASSKEY_RP_ID=example.com \
+            --build-arg NEXT_PUBLIC_PASSKEY_RP_NAME=Rentars \
+            --build-arg NEXT_PUBLIC_PASSKEY_ORIGIN=https://example.com \
+            apps/web/
+
+      - name: Scan backend image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: rentars-backend:ci-scan
+          format: table
+          exit-code: "1"
+          # Fail on CRITICAL vulnerabilities; MEDIUM/HIGH produce warnings.
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Scan frontend image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: rentars-web:ci-scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: trivy-results*.json
+          retention-days: 30
+
+  # ── Terraform plan ───────────────────────────────────────────────────────────
+  terraform-plan-staging:
+    name: Terraform Plan — Staging
+    runs-on: ubuntu-latest
+    environment: staging-plan   # read-only environment with plan-only IAM role
+
+    env:
+      TF_WORKSPACE: staging
+      # Secret ARN references are injected from GitHub Actions Secrets.
+      # These point to AWS Secrets Manager ARNs, not the secret values themselves.
+      TF_VAR_secret_arn_supabase_service_role_key: ${{ secrets.STAGING_ARN_SUPABASE_SERVICE_ROLE_KEY }}
+      TF_VAR_secret_arn_jwt_secret:                ${{ secrets.STAGING_ARN_JWT_SECRET }}
+      TF_VAR_secret_arn_trustless_work_api_key:    ${{ secrets.STAGING_ARN_TRUSTLESS_WORK_API_KEY }}
+      TF_VAR_secret_arn_smtp_pass:                 ${{ secrets.STAGING_ARN_SMTP_PASS }}
+      TF_VAR_secret_arn_hcaptcha_secret_key:       ${{ secrets.STAGING_ARN_HCAPTCHA_SECRET_KEY }}
+      TF_VAR_secret_arn_metrics_token:             ${{ secrets.STAGING_ARN_METRICS_TOKEN }}
+      TF_VAR_secret_arn_stellar_admin_secret:      ${{ secrets.STAGING_ARN_STELLAR_ADMIN_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (plan-only role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+
+      - name: Terraform Init
+        working-directory: infra/terraform
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        working-directory: infra/terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: infra/terraform
+        run: |
+          terraform plan \
+            -var-file=staging.tfvars \
+            -var="backend_image=placeholder/rentars-backend:staging" \
+            -var="frontend_image=placeholder/rentars-web:staging" \
+            -input=false \
+            -no-color \
+            -out=tfplan-staging 2>&1 | tee plan-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect destructive changes
+        working-directory: infra/terraform
+        run: |
+          # Fail the job if the plan would destroy or replace any stateful resource.
+          # The list of protected resource types is intentionally conservative.
+          PROTECTED="aws_elasticache_replication_group\|aws_db_instance\|aws_s3_bucket\|aws_secretsmanager_secret"
+          if grep -E "(must be replaced|will be destroyed)" plan-output.txt | grep -q "$PROTECTED"; then
+            echo "❌ Plan includes destructive changes to stateful resources. Review required."
+            echo "--- Affected resources ---"
+            grep -E "(must be replaced|will be destroyed)" plan-output.txt | grep "$PROTECTED"
+            exit 1
+          fi
+          echo "✅ No destructive changes to stateful resources detected."
+
+      - name: Post plan summary as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('infra/terraform/plan-output.txt', 'utf8');
+            // Truncate to 60 000 chars to fit within GitHub comment size limits
+            const truncated = planOutput.length > 60000
+              ? planOutput.slice(0, 60000) + '\n\n… [truncated — see CI artifact for full plan]'
+              : planOutput;
+
+            const body = `## Terraform Plan — Staging\n\n<details><summary>Click to expand plan</summary>\n\n\`\`\`hcl\n${truncated}\n\`\`\`\n\n</details>`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Upload plan artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-staging
+          path: |
+            infra/terraform/tfplan-staging
+            infra/terraform/plan-output.txt
+          retention-days: 30

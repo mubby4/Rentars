@@ -1,9 +1,46 @@
+# ── Build artifacts ───────────────────────────────────────────────────────────
 node_modules
+dist
+coverage
+
+# ── Environment / secrets — NEVER bake into an image ─────────────────────────
 .env
 .env.local
 .env.*.local
+.env.production
+.env.production.local
+# Keep only the non-secret example file for documentation purposes
+!.env.example
+!.env.production.example
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+tests
 *.test.ts
-dist
+*.spec.ts
+jest.config.js
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+*.md
+docs
+
+# ── Version control ───────────────────────────────────────────────────────────
 .git
 .gitignore
-README.md
+.github
+
+# ── Editor / OS artifacts ─────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Docker files (not needed inside the image) ────────────────────────────────
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# ── CI / scripts (not needed at runtime) ─────────────────────────────────────
+.github
+scripts

@@ -1,0 +1,241 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Rentars — Staging Docker Compose
+#
+# Usage:
+#   # Copy and populate the env file first (values from your secrets provider):
+#   cp infra/environments/staging/.env.staging.example infra/environments/staging/.env.staging
+#   # Edit .env.staging — all SECRET_* vars must be filled in
+#
+#   # Start the full staging stack:
+#   docker compose -f infra/docker-compose.staging.yml \
+#     --env-file infra/environments/staging/.env.staging up -d
+#
+#   # Verify health:
+#   docker compose -f infra/docker-compose.staging.yml ps
+#   curl -s https://staging.rentars.app/health | jq .
+#
+# Architecture:
+#   nginx  → reverse proxy + TLS termination (port 443/80)
+#   api    → Bun backend (port 3000, internal only)
+#   web    → Next.js frontend (port 3001, internal only)
+#   redis  → Redis 7 (port 6379, internal only)
+#
+# All services run on the internal `rentars-staging` network.
+# Only nginx exposes ports to the host.
+#
+# Secrets: all SECRET_* and KEY_* variables come from the host environment or
+# --env-file.  No plaintext secret values appear in this file.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: '3.8'
+
+# ── Shared logging configuration ─────────────────────────────────────────────
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+# ── Common health-check defaults ─────────────────────────────────────────────
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 20s
+
+services:
+
+  # ── Backend API ─────────────────────────────────────────────────────────────
+  api:
+    image: ${BACKEND_IMAGE:-rentars-backend:staging}
+    build:
+      context: ../apps/backend
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* build args are not needed for the backend.
+      # All runtime secrets are injected via environment below.
+    restart: unless-stopped
+    networks:
+      - rentars-staging
+    # No host port binding — traffic reaches this service only via nginx.
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+
+      # ── Supabase ────────────────────────────────────────────────────────────
+      # Values come from the secrets provider; never hardcode here.
+      SUPABASE_URL:              ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+
+      # ── Auth ────────────────────────────────────────────────────────────────
+      JWT_SECRET: ${JWT_SECRET}
+
+      # ── Redis ───────────────────────────────────────────────────────────────
+      REDIS_URL: redis://redis:6379
+
+      # ── CORS ────────────────────────────────────────────────────────────────
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://staging.rentars.app}
+
+      # ── Stellar ─────────────────────────────────────────────────────────────
+      STELLAR_NETWORK:                  ${STELLAR_NETWORK:-testnet}
+      STELLAR_RPC_URL:                  ${STELLAR_RPC_URL}
+      PROPERTY_LISTING_CONTRACT_ID:     ${PROPERTY_LISTING_CONTRACT_ID}
+      BOOKING_CONTRACT_ID:              ${BOOKING_CONTRACT_ID}
+
+      # ── Trustless Work ──────────────────────────────────────────────────────
+      TRUSTLESS_WORK_API_URL: ${TRUSTLESS_WORK_API_URL}
+      TRUSTLESS_WORK_API_KEY: ${TRUSTLESS_WORK_API_KEY}
+
+      # ── Email ───────────────────────────────────────────────────────────────
+      SMTP_HOST:   ${SMTP_HOST}
+      SMTP_PORT:   ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER:   ${SMTP_USER}
+      SMTP_PASS:   ${SMTP_PASS}
+      EMAIL_FROM:  ${EMAIL_FROM:-Rentars Staging <no-reply@staging.rentars.app>}
+
+      # ── Observability ───────────────────────────────────────────────────────
+      LOG_LEVEL:     ${LOG_LEVEL:-info}
+      METRICS_TOKEN: ${METRICS_TOKEN}
+
+      # ── Security ────────────────────────────────────────────────────────────
+      HSTS_ENABLED: "true"
+
+      # ── hCaptcha ────────────────────────────────────────────────────────────
+      HCAPTCHA_SECRET_KEY: ${HCAPTCHA_SECRET_KEY}
+      HCAPTCHA_ENABLED:    ${HCAPTCHA_ENABLED:-true}
+
+      # ── Data retention (staging uses shorter windows for faster testing) ────
+      RETENTION_INTERVAL_HOURS:               ${RETENTION_INTERVAL_HOURS:-24}
+      RETENTION_BATCH_SIZE:                   ${RETENTION_BATCH_SIZE:-500}
+      RETENTION_RUN_ON_STARTUP:               ${RETENTION_RUN_ON_STARTUP:-false}
+      RETENTION_WALLET_CHALLENGES_HOURS:      ${RETENTION_WALLET_CHALLENGES_HOURS:-1}
+      RETENTION_PASSWORD_RESET_TOKENS_DAYS:   ${RETENTION_PASSWORD_RESET_TOKENS_DAYS:-7}
+      RETENTION_BLOCKCHAIN_LOGS_DAYS:         ${RETENTION_BLOCKCHAIN_LOGS_DAYS:-90}
+      RETENTION_SYNC_LOG_DAYS:                ${RETENTION_SYNC_LOG_DAYS:-30}
+      RETENTION_NOTIFICATIONS_READ_DAYS:      ${RETENTION_NOTIFICATIONS_READ_DAYS:-90}
+      RETENTION_NOTIFICATIONS_UNREAD_DAYS:    ${RETENTION_NOTIFICATIONS_UNREAD_DAYS:-180}
+      RETENTION_SEARCH_ANALYTICS_DAYS:        ${RETENTION_SEARCH_ANALYTICS_DAYS:-365}
+      RETENTION_PROPERTY_VIEWS_DAYS:          ${RETENTION_PROPERTY_VIEWS_DAYS:-90}
+      RETENTION_PAYMENTS_FAILED_DAYS:         ${RETENTION_PAYMENTS_FAILED_DAYS:-90}
+      RETENTION_SOFT_DELETED_PROPERTIES_DAYS: ${RETENTION_SOFT_DELETED_PROPERTIES_DAYS:-180}
+      RETENTION_ACCOUNT_DELETIONS_CLOSED_DAYS: ${RETENTION_ACCOUNT_DELETIONS_CLOSED_DAYS:-30}
+
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────────────
+  web:
+    image: ${FRONTEND_IMAGE:-rentars-web:staging}
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* vars are baked into the JS bundle at build time.
+      # Provide them as build args when building the image; they are not
+      # secret and are safe to include here.
+      args:
+        NEXT_PUBLIC_API_URL:          ${NEXT_PUBLIC_API_URL:-https://api.staging.rentars.app}
+        NEXT_PUBLIC_STELLAR_NETWORK:  ${NEXT_PUBLIC_STELLAR_NETWORK:-testnet}
+        NEXT_PUBLIC_HORIZON_URL:      ${NEXT_PUBLIC_HORIZON_URL:-https://horizon-testnet.stellar.org}
+        NEXT_PUBLIC_SOROBAN_RPC_URL:  ${NEXT_PUBLIC_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+        NEXT_PUBLIC_PASSKEY_RP_ID:    ${NEXT_PUBLIC_PASSKEY_RP_ID:-staging.rentars.app}
+        NEXT_PUBLIC_PASSKEY_RP_NAME:  ${NEXT_PUBLIC_PASSKEY_RP_NAME:-Rentars Staging}
+        NEXT_PUBLIC_PASSKEY_ORIGIN:   ${NEXT_PUBLIC_PASSKEY_ORIGIN:-https://staging.rentars.app}
+    restart: unless-stopped
+    networks:
+      - rentars-staging
+    expose:
+      - "3001"
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      HOSTNAME: "0.0.0.0"
+      NEXT_TELEMETRY_DISABLED: "1"
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/"]
+      start_period: 25s
+    logging: *default-logging
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    # Pinned to a specific Redis patch release for reproducibility.
+    # Update with: docker pull redis:7.4-alpine && docker inspect ...
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    networks:
+      - rentars-staging
+    # No host port binding — Redis is only accessible inside the stack network.
+    expose:
+      - "6379"
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis-staging-data:/data
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+    logging: *default-logging
+
+  # ── Nginx reverse proxy ──────────────────────────────────────────────────────
+  # Handles TLS termination, HTTP→HTTPS redirect, and routing:
+  #   /api/*  → api:3000
+  #   /*      → web:3001
+  #
+  # TLS certificates are mounted from the host (managed externally by Let's
+  # Encrypt / certbot or ACM).  See infra/nginx/staging.conf for the full
+  # server block.
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    networks:
+      - rentars-staging
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/staging.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TLS_CERT_PATH:-./nginx/certs}:/etc/nginx/certs:ro
+    healthcheck:
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+    logging: *default-logging
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  redis-staging-data:
+    driver: local
+
+# ── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  rentars-staging:
+    driver: bridge
+    # Explicit subnet to avoid clashes with other local Docker networks.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

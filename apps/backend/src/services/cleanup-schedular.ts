@@ -12,8 +12,25 @@ const MAX_CONCURRENT_RECONCILIATIONS = 5;
 const INITIAL_BACKOFF_MS = 1000; // 1 second
 const MAX_BACKOFF_MS = 30000; // 30 seconds
 
+/**
+ * How often the full data-retention sweep runs.
+ * Default: once every 24 hours.  Configurable via RETENTION_INTERVAL_HOURS.
+ */
+const RETENTION_INTERVAL_MS =
+  (env.RETENTION_INTERVAL_HOURS ?? 24) * 60 * 60 * 1000;
+
+/**
+ * Delay before the startup dry-run preview fires.
+ * Set short (10 s) so operators see a preview soon after boot without
+ * blocking the server from accepting traffic.
+ */
+const RETENTION_STARTUP_PREVIEW_DELAY_MS = 10_000;
+
 let concurrentReconciliations = 0;
 let reconciliationBackoffMs = INITIAL_BACKOFF_MS;
+
+/** Guard: prevent two full retention runs from overlapping. */
+let retentionRunning = false;
 
 async function runSync(): Promise<void> {
   const propertiesResult = await syncAllProperties();
@@ -98,6 +115,36 @@ export function startSyncScheduler(): void {
       console.error('[expiry] Initial cleanup error:', err),
     );
   }, 30_000); // 30 seconds after startup
+
+  // ── Data-retention cleanup ────────────────────────────────────────────────
+  //
+  // Scheduled sweep runs every RETENTION_INTERVAL_HOURS (default 24 h).
+  // At startup a dry-run preview fires after a short delay so operators can
+  // verify what the next scheduled run will touch before it mutates anything.
+  //
+  // To trigger an immediate live run without restarting the server, set
+  // RETENTION_RUN_ON_STARTUP=true — useful for one-off cleanups after a
+  // retention-policy change is deployed.
+
+  setInterval(() => {
+    runDataRetention().catch((err) => console.error('[retention] Scheduler error:', err));
+  }, RETENTION_INTERVAL_MS);
+
+  // Startup preview: dry-run only, no deletions.
+  setTimeout(() => {
+    runDataRetention({ dryRun: true, label: 'startup-preview' }).catch((err) =>
+      console.error('[retention] Startup preview error:', err),
+    );
+  }, RETENTION_STARTUP_PREVIEW_DELAY_MS);
+
+  // Optional immediate live run (e.g. after a retention-policy change).
+  if (env.RETENTION_RUN_ON_STARTUP) {
+    setTimeout(() => {
+      runDataRetention({ dryRun: false, label: 'startup-live' }).catch((err) =>
+        console.error('[retention] Startup live-run error:', err),
+      );
+    }, 60_000); // 60 s after startup — after the dry-run preview
+  }
 
   console.log(
     `[sync] Scheduler started — sync interval: ${SYNC_INTERVAL_MS / 1000}s, ` +
